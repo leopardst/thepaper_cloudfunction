@@ -1,5 +1,7 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const request = require('teeny-request').teenyRequest;
+
 
 admin.initializeApp();
 const firestoreDb = admin.firestore();
@@ -9,16 +11,12 @@ exports.updateFirestore = functions.database.ref('/funerals/{funeralId}')
     .onWrite((change, context) => {
 
         const funeral = context.params.funeralId;
-        // const radio = context.params.radioId;
 
         // // Grab the current value of what was written to the Realtime Database.
         const data = change.after.val();
         var finalImageURL = "";
-        // const formattedFuneralDate = admin.firestore.Timestamp.fromMillis(data.funeralDate.Timestamp.);
-        // console.log('date:', data.fields.funeral.funeralDate);
+       
         console.log('Processing new funeral:', data, funeral);
-
-
 
         var funeralObject = {
             firstName : data.firstName,
@@ -27,7 +25,7 @@ exports.updateFirestore = functions.database.ref('/funerals/{funeralId}')
             obituary : data.obituary,
             location : data.location,
             sid : data.sid,
-            createdDate : data.createdDate,
+            createdDate : admin.firestore.Timestamp.fromDate(new Date(data.createdDate)),
             isLive : data.isLive,
         };
 
@@ -52,55 +50,56 @@ exports.updateFirestore = functions.database.ref('/funerals/{funeralId}')
     
         // }
 
-        return firestoreDb.collection('funerals').doc('paperman-' + data.papermanFuneralId).set(funeralObject, {merge: true});
+        return firestoreDb.collection('funerals').doc('paperman-' + data.remote_id).set(funeralObject, {merge: true});
 
 });
 
-exports.newRemoteCondolence = functions.database.ref('/funerals/{funeralId}/condolences')
+exports.newRemoteCondolence = functions.database.ref('/condolences/{condolenceId}')
     .onWrite(async (change, context) => {
         
-        const funeralId = context.params.funeralId;
         const data = change.after.val();
-        var user;
+        const documentId = context.params.condolenceId;
 
-        console.log("Processing new condolence:" + data);
+        console.log("Creating condolence:", data);
+            
+        var condolenceObject = {
+            name: data.name,
+            email: data.email,
+            message: data.message,
+            updatedAt: admin.firestore.Timestamp.fromDate(new Date(data.updatedAt)),
+            isPublic: data.isPublic,
+            remoteId: data.remote_id,
+        };
 
-        // Check if user exists
-        const snapshot = await checkUserInFirebase(data.email);
-        console.log("snapshot:" + snapshot);
-        if (snapshot.isError){
-            console.log("Creating new user");
-            const newSnapshot = await createUserByEmail(data.email, data.name);
-            user = newSnapshot.user;
+        var commentObject = {
+            name: data.name,
+            email: data.email,
+            content: data.message,
+            createdAt: admin.firestore.Timestamp.fromDate(new Date(data.updatedAt)),
+            isPublic: data.isPublic,
+            remoteId: data.remote_id
+        };
+            
+        let batch = firestoreDb.batch();
+        
+        let condolenceRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
+        .collection('condolences').doc(documentId);
+        batch.set(condolenceRef, condolenceObject);
+
+        let commentRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
+        .collection('comments').doc(documentId);
+        batch.set(commentRef, commentObject);
+
+        if(functions.config().condolences.receive === "true"){
+            return batch.commit();
         }
         else{
-            user = snapshot.user;
-        }
-
-        console.log("Creating condolence:", condolenceObject, user.email);
-
-        if(user){
-            var condolenceObject = {
-                name: data.name,
-                email: data.email,
-                message: data.message,
-                updatedAt: data.updatedAt,
-                isPublic: data.isPublic,
-                remote_id: data.remote_id,
-            };
-
-            return firestoreDb.collection('funerals').doc(funeralId)
-                .collection('condolences').doc(user.uid).set(condolenceObject);
-        }
-        else{
-            console.log("Something went wrong")
             return null;
         }
         
 });
 
 async function checkUserInFirebase(email) {
-
     return new Promise((resolve) => {
         admin.auth().getUserByEmail(email)
             .then((user) => {
@@ -112,21 +111,8 @@ async function checkUserInFirebase(email) {
             });
     });
 }
-    // try{
-    //     const snapshot = await firestoreAuth.getUserByEmail(email);
-    //     return snapshot
-    // }
-    // catch{
-    //     console.log('error');        
-    //     if (error.code === 'auth/user-not-found') {
-    //         return createUserByEmail(email, name);
-    //      }
-    // }
-    
-
 
 async function createUserByEmail(email, name){
-    // console.log("create user");
 
     return new Promise((resolve) => {
         admin.auth().createUser({
@@ -146,64 +132,66 @@ async function createUserByEmail(email, name){
         });
     });
 
-    // try{
-
-    //     const user = await admin.auth().createUser({
-    //         email: email,
-    //         emailVerified: false,
-    //         // password: "secretPassword",
-    //         displayName: name,
-    //         // photoURL: "http://www.example.com/12345678/photo.png",
-    //         disabled: false
-    //     });
-        
-    //     return user;
-    // }
-    // catch (error){
-    //     console.log('Error creating user', email);
-    // }
-
-    // admin.auth().createUser({
-    //     email: email,
-    //     emailVerified: false,
-    //     // password: "secretPassword",
-    //     displayName: name,
-    //     // photoURL: "http://www.example.com/12345678/photo.png",
-    //     disabled: false
-    // })
-    // .then((userRecord) => {
-    //     // See the UserRecord reference doc for the contents of userRecord.
-    //     // console.log("Successfully created new user:", userRecord.uid);
-    //     return userRecord;
-    // })
-    // .catch((error) => {
-    //     // console.log("Error creating new user:", error);
-    //     return null;
-    // }); 
 }
 
 exports.sendCondolence = functions.firestore
     .document('funerals/{funeralId}/condolences/{condolenceId}')
-    .onCreate((snap, context) => {
+    .onWrite((change, context) => {
 
-        const newValue = snap.data();
-        const funeralDoc = firestoreDb.collection('funerals').doc(context.params.funeralId);
-        const getDoc = funeralDoc.get()
-            .then(doc => {
-                
-                    console.log('New condolence:', newValue, doc.data());
-                return "";
-                })
-                .catch(err => {
-                console.log('Error getting document', err);
+        const funeral = context.params.funeralId;
+        const data = change.after.exists ? change.after.data() : null;
+        const funeralRef = firestoreDb.collection('funerals').doc(context.params.funeralId);
+    
+
+        if(data === null){ //deleted
+            return null;
+        }
+        else{
+            if("remoteId" in data){ // Created on remote, dont send
+                return null;
+            }
+            else{
+                console.log('New local condolence');
+                return funeralRef.get().then(doc => {
+                    if (!doc.exists) {
+                        console.log('Funeral not found!');
+                        return null;
+                    } else {
+    
+                        var payload = {
+                            condolence: {
+                                author: data.name,
+                                email: "test@exmaple.com",
+                            },
+                            public: "true"
+                        }
+                        
+                    
+                        var options = {
+                            uri: "http://c8bd3564.ngrok.io/funerals/" + doc.data().sid + "/condolences",
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: payload
+                        };
+    
+                        console.log('Sending', doc.data(), data);
+    
+    
+                        if(functions.config().condolences.sendto === "Prod"){
+                            options.uri = "https://www.paperman.com/funerals/" + doc.data().sid + "/condolences";
+                        }
+
+                        return request(options, function (error, response, body) {
+                            console.log('error:', error); // Print the error if one occurred 
+                            console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received 
+                            console.log('body:', body); //Prints the response of the request. 
+                        });
+    
+                    }
                 });
-            
-        return "";
-
-        // request.post('http://2f14e740.ngrok.io/$', function (error, response, body) {
-        //     console.log('error:', error); // Print the error if one occurred 
-        //     console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received 
-        //     console.log('body:', body); //Prints the response of the request. 
-        //   });
+            }
+        }
+        
+    
 });
 

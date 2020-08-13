@@ -1,6 +1,8 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const request = require('teeny-request').teenyRequest;
+const util = require('util');
+const axios = require('axios');
 const algoliasearch = require("algoliasearch");
 // const algoliaModule = require('./algolia_import.js');
 
@@ -100,15 +102,26 @@ exports.newRemoteCondolence = functions.database.ref('/condolences/{funeralId}/{
         
         const data = change.after.val();
         const documentId = context.params.funeralId + "-" + context.params.condolenceId;
-
-        console.log("Creating condolence:", data);
         
         const checkUserDoc =  await checkUserInFirebase(data.email);
 
-        if(data.isPublic)
+        if(data.isDeleted){
+            console.log('Condolence deleted by remote', data);
+            
+
+            return firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
+            .collection('condolences').doc(checkUserDoc.user.uid).set({isDeleted: true, isPublic: false}).then(function() {
+                return console.log("Condolence successfully deleted!");
+            }).catch(function(error) {
+                return console.error("Error removing condolence: ", error);
+            });
+
+        }
+        else if(data.isPublic)
         {
             if("remote_id" in data && !checkUserDoc.isError){  // it's remote and we have a valid user
                 
+            console.log("Creating remote condolence:", data);
                 const checkCondolenceDoc = await checkIfCondolenceExists(checkUserDoc.user.uid, data.remote_funeral_id);
 
                 if(checkCondolenceDoc)
@@ -130,15 +143,15 @@ exports.newRemoteCondolence = functions.database.ref('/condolences/{funeralId}/{
                 isDeleted: false,
             };
 
-            var commentObject = {
-                name: data.name,
-                email: data.email,
-                content: data.message.trim(),
-                createdAt: admin.firestore.Timestamp.fromDate(new Date(data.updatedAt)),
-                isPublic: data.isPublic,
-                remoteId: data.remote_id,
-                isDeleted: false,
-            };
+            // var commentObject = {
+            //     name: data.name,
+            //     email: data.email,
+            //     content: data.message.trim(),
+            //     createdAt: admin.firestore.Timestamp.fromDate(new Date(data.updatedAt)),
+            //     isPublic: data.isPublic,
+            //     remoteId: data.remote_id,
+            //     isDeleted: false,
+            // };
 
 
             let batch = firestoreDb.batch();
@@ -147,12 +160,12 @@ exports.newRemoteCondolence = functions.database.ref('/condolences/{funeralId}/{
             .collection('condolences').doc(documentId);
             batch.set(condolenceRef, condolenceObject, {merge: true});
 
-            let commentRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
-            .collection('comments').doc(documentId);
-            batch.set(commentRef, commentObject, {merge: true});
+            // let commentRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
+            // .collection('comments').doc(documentId);
+            // batch.set(commentRef, commentObject, {merge: true});
 
             if(functions.config().condolences.receive === "true"){
-                console.log('Saving new condolence', condolenceRef, condolenceObject);
+                console.log('Saving new remote condolence', condolenceRef, condolenceObject);
                 return batch.commit();
             }
             else{
@@ -167,14 +180,14 @@ async function checkIfCondolenceExists(uid, funeralId){
     let getCondolence = firestoreDb.collection('funerals').doc("paperman-" + funeralId)
     .collection('condolences').doc(uid).get();
     
-    let getComment = firestoreDb.collection('funerals').doc("paperman-" + funeralId)
-    .collection('comments').doc(uid).get();
+    // let getComment = firestoreDb.collection('funerals').doc("paperman-" + funeralId)
+    // .collection('comments').doc(uid).get();
     
-    return Promise.all([getCondolence, getComment])
+    return Promise.all([getCondolence])
         .then(values => {
-            const [condolence, comment] = values;
+            const [condolence] = values;
          
-            if(condolence.exists || comment.exists ){
+            if(condolence.exists){
                 return true;
             }
             else{
@@ -241,15 +254,57 @@ exports.condolenceHistoryAndDelete = functions.firestore
             previousValue.isDeleted = true;
             previousValue.reason = 'deleted';
             previousValue.updatedAt = newValue.updatedAt.toDate();
+            console.log('deleted');
+            var removeRemote = await removeRemoteCondolence(funeralRef, newValue.source.sourceId,newValue.source.remoteItemId);
 
             return firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId).collection('history').add(previousValue);
         } else if(newValue.content !== previousValue.content){
             previousValue.reason = 'content edited';
             previousValue.updatedAt = newValue.updatedAt;
+            console.log('Condolence content changed');
             
             return firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId).collection('history').add(previousValue);
         }
 });
+
+async function removeRemoteCondolence(funeralRef, source, itemId){
+   
+    return funeralRef.get().then(doc => {
+        if (!doc.exists) {
+            console.log('Funeral not found!');
+            return null;
+        } else {
+            var options = {
+                method: 'GET',
+            };
+
+            switch(source){
+                case 'paperman-dev':
+                    options.uri = "http://7f052f66267f.ngrok.io/funerals/" + doc.data().sid + "/condolences/" + itemId + "/remove";
+                    break;
+                case 'paperman-prod':
+                    options.uri = "https://www.paperman.com/funerals/" + doc.data().sid + "/condolences/" + itemId + "/remove";
+                    break;
+            }
+                    
+            // if(!sendSettings.blacklist){ //not blacklisted
+                
+            //     if(functions.config().condolences.sendto === "Prod" || sendSettings.whitelist){ // Prod or whitelisted
+            //         options.uri = "https://www.paperman.com/funerals/" + doc.data().sid + "/condolences";
+            //         whereTo = 'Prod'
+            //     }
+            // }
+
+            console.log('Removing remote condolence', source, itemId);
+
+            return request(options, function (error, response, body) {
+                console.log('Response, status, error, body:', response, response.statusCode, error, body);
+                // console.log(body["id"]);
+            });
+        }
+    });
+    
+}
 
 exports.sendCondolence = functions.firestore
     .document('funerals/{funeralId}/condolences/{condolenceId}')
@@ -257,35 +312,38 @@ exports.sendCondolence = functions.firestore
 
         const funeralId = context.params.funeralId;
         const condolenceId = context.params.condolenceId;
-        const data = change.after.exists ? change.after.data() : null;
-        const funeralRef = firestoreDb.collection('funerals').doc(context.params.funeralId);
+
+
+        // const data = (change.after.exists && change.before.exists) ? change.after.data() : null;
+        const data = change.after.data();
+        const before = change.before.data();
+
+        const funeralRef = firestoreDb.collection('funerals').doc(funeralId);
+        const condolenceRef = firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId);
         
         const userEmail = await getUserEmailFromUID(condolenceId); 
-        console.log("email:", userEmail, condolenceId);
 
         const settingsDoc = await checkSendSettings(condolenceId);
 
-        console.log('settings1', settingsDoc);
+        var send = true;
 
-        sendRemoteCondolence(data, userEmail, funeralRef, settingsDoc);
-        createUserCondolence(data, condolenceId, funeralRef, funeralId);
-    
-});
-
-exports.sendComment = functions.firestore
-    .document('funerals/{funeralId}/comments/{commentId}')
-    .onWrite(async (change, context) => {
-
-        const funeral = context.params.funeralId;
-        const commentId = context.params.commentId;
-        const data = change.after.exists ? change.after.data() : null;
-        const funeralRef = firestoreDb.collection('funerals').doc(context.params.funeralId);
+        // We only want to push to remote if one of these fields changed. Otherwise don't send.
+        if(change.before.exists && change.after.exists){
+            if(data.isDeleted === before.isDeleted && data.isPublic === before.isPublic && data.name === before.name && data.content === before.content){
+                send = false;
+            }
+        }
         
-        const userEmail = await getUserEmailFromUID(commentId); 
+        if(!("remoteId" in data) && change.before.exists && send){ // Check if remote condolence, and not first create (A bit of a hack; let the onCreate function initialize the condolence, only send after that's done. Also not deleted.)
+        
 
-        const settingsDoc = await checkSendSettings(commentId);
+            if(!data.isDeleted){ // Dont send to remote if condolence was deleted
+                console.log('Setting up to send:', userEmail, condolenceId, settingsDoc);
+                sendRemoteCondolence(data, userEmail, funeralRef, settingsDoc, condolenceRef);
+            }
 
-        sendRemoteCondolence(data, userEmail, funeralRef, settingsDoc);
+            updateUserCondolenceList(data, condolenceId, funeralRef, funeralId);
+        }
     
 });
 
@@ -316,119 +374,126 @@ async function checkSendSettings(uid){
     
 }
 
-function createUserCondolence(originalCondolence, uid, funeralRef, funeralId){
-    // console.log('Starting: Adding condolence to users list of condolences', originalCondolence);
-    if("remoteId" in originalCondolence){ // Created on remote, dont send
-        return null;
-    }
-    else{    
-        return funeralRef.get().then(doc => {
-            if (!doc.exists) {
-                console.log('Funeral not found!');
-                return null;
-            } else {
-                
-                var img;
-                if(doc.data().imageURL){
-                    img = doc.data().imageURL;
-                }
-                else{
-                    img = null;
-                }
-                var userCondolenceObject = {
-                    name: doc.data().firstName + ' ' + doc.data().lastName,
-                    imageURL: img,
-                    funeralDate: doc.data().funeralDate,
-                    id: funeralId,
-                };     
+function updateUserCondolenceList(originalCondolence, uid, funeralRef, funeralId){
 
+    return funeralRef.get().then(doc => {
+        if (!doc.exists) {
+            console.log('Funeral not found!');
+            return null;
+        } else {
+            
+            var img;
+            if(doc.data().imageURL){
+                img = doc.data().imageURL;
+            }
+            else{
+                img = null;
+            }
+            var userCondolenceObject = {
+                name: doc.data().firstName + ' ' + doc.data().lastName,
+                imageURL: img,
+                funeralDate: doc.data().funeralDate,
+                id: funeralId,
+            };     
+
+
+            if(!originalCondolence.isDeleted){
+                // new, add to list
+                // this is going to have to be changed if we stop using user UID as the ID for condolence
                 console.log('Adding to users condolence list', uid, userCondolenceObject);
 
-                if(!originalCondolence.isDeleted){
-                    // new, add to list
-                    // this is going to have to be changed if we stop using user UID as the ID for condolence
-                    return firestoreDb.collection('users').doc(uid).update({
-                        condolences: admin.firestore.FieldValue.arrayUnion(userCondolenceObject)
-                    });
-                }
-                else{
-                    // deleted, remove from list
+                return firestoreDb.collection('users').doc(uid).update({
+                    condolences: admin.firestore.FieldValue.arrayUnion(userCondolenceObject)
+                });
+            }
+            else{
+                // deleted, remove from list
+                console.log('Removing from users condolence list', uid, userCondolenceObject);
 
-                    return firestoreDb.collection('users').doc(uid).update({
-                        condolences: admin.firestore.FieldValue.arrayRemove(userCondolenceObject)
-                    });
+                return firestoreDb.collection('users').doc(uid).update({
+                    condolences: admin.firestore.FieldValue.arrayRemove(userCondolenceObject)
+                });
+            }
+        }
+    });
+
+}
+
+function sendRemoteCondolence(data, userEmail, funeralRef, sendSettings, condolenceRef){
+
+    return funeralRef.get().then(doc => {
+        if (!doc.exists) {
+            console.log('Funeral not found!');
+            return null;
+        } else {
+            var payload = {
+                condolence: {
+                    author: data.name,
+                    email: userEmail,
+                    message: data.content,
+                },
+                public: "true"
+            }
+            
+            
+            var options = {
+                url: "http://7f052f66267f.ngrok.io/funerals/" + doc.data().sid + "/condolences",
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'PKEY':'974d017320aad98fbe1e76c9080372dcbba67c22'},
+                data: payload,
+                responseType: "json"
+            };
+
+            var whereTo = 'paperman-dev';
+            
+            if(!sendSettings.blacklist){ //not blacklisted
+                
+                if(functions.config().condolences.sendto === "Prod" || sendSettings.whitelist){ // Prod or whitelisted
+                    options.uri = "https://www.paperman.com/funerals/" + doc.data().sid + "/condolences";
+                    whereTo = 'paperman-prod'
                 }
             }
-        });
-    }
-}
 
-function sendRemoteCondolence(data, userEmail, funeralRef, sendSettings){
-    if(data === null){ //deleted
-        return null;
-    }
-    else{
-        if("remoteId" in data){ // Created on remote, dont send
-            return null;
-        }
-        else{
-            // console.log('New local condolence');
-            return funeralRef.get().then(doc => {
-                if (!doc.exists) {
-                    console.log('Funeral not found!');
-                    return null;
-                } else {
-                    var payload = {
-                        condolence: {
-                            author: data.name,
-                            email: userEmail,
-                            message: data.content,
-                        },
-                        public: "true"
-                    }
-                    
-                    
-                    var options = {
-                        uri: "http://b29a304873c9.ngrok.io/funerals/" + doc.data().sid + "/condolences",
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: payload
-                    };
+            console.log('Sending new local condolence', whereTo, doc.data(), payload, sendSettings);
 
-                    var whereTo = 'Dev';
-                    
-                    if(!sendSettings.blacklist){ //not blacklisted
-                        
-                        if(functions.config().condolences.sendto === "Prod" || sendSettings.whitelist){ // Prod or whitelisted
-                            options.uri = "https://www.paperman.com/funerals/" + doc.data().sid + "/condolences";
-                            whereTo = 'Prod'
+            // const requestPromise = util.promisify(request);
+            // const res = request(options, function (error, response, body) {
+            //     
+            // });
+
+            // console.log('responseAfter', response);
+
+
+            return axios(options).then(
+                response => {
+                    console.log('Response, status, error, body:', response.data["id"], response.data);
+                    var responsePayload = {
+                        source: {
+                            sourceId: whereTo,
+                            remoteItemId: response.data["id"],
                         }
-                    }
-
-                    console.log('Sending new local condolence', whereTo, doc.data(), payload, sendSettings);
-
-                    return request(options, function (error, response, body) {
-                        console.log('error:', error); // Print the error if one occurred 
-                        console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received 
-                        console.log('body:', body); //Prints the response of the request. 
-                    });
+                    };
+                    return condolenceRef.set(responsePayload, {merge: true});
+                    // return null;
                 }
+            ).catch(err => {
+                console.log('Error', err);
+                return null;
             });
+
+            // return 
+
         }
-    }
+    });
+
 }
 
-// exports.scheduleDailyNotification = functions.pubsub.schedule('every 24 hours')
-//     .timeZone('America/New_York').onRun((context) => {
-//     console.log('Running!');
-//     return null;
-//   });
 
-
+// newCondolence :  Sets createdAt time for all condolences; remote and local
 exports.newCondolence = functions.firestore
     .document('funerals/{funeralId}/condolences/{condolenceId}')
     .onCreate((snap, context) => {
-    
+
         const newCondolence = snap.data();
         const condolenceId = context.params.condolenceId;
         const funeralId = context.params.funeralId;
@@ -439,7 +504,7 @@ exports.newCondolence = functions.firestore
     
 });
 
- 
+// newUserProfile : Creates the user profile when a new user logs in for the first time
 exports.newUserProfile = functions.auth.user().onCreate((user) => {
     
     console.log('New user:', user);

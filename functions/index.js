@@ -245,25 +245,27 @@ exports.condolenceHistoryAndDelete = functions.firestore
         const funeralId = context.params.funeralId;
         const condolenceId = context.params.condolenceId;
         
-        const newValue = change.after.exists ? change.after.data() : null;
+        const newValue = change.after.data();
         const previousValue = change.before.data();
         
         const funeralRef = firestoreDb.collection('funerals').doc(context.params.funeralId);
 
+        
         if(newValue.isDeleted){ // Deleted, save to history
             previousValue.isDeleted = true;
             previousValue.reason = 'deleted';
             previousValue.updatedAt = newValue.updatedAt.toDate();
-            console.log('deleted');
             var removeRemote = await removeRemoteCondolence(funeralRef, newValue.source.sourceId,newValue.source.remoteItemId);
 
             return firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId).collection('history').add(previousValue);
-        } else if(newValue.content !== previousValue.content){
-            previousValue.reason = 'content edited';
-            previousValue.updatedAt = newValue.updatedAt;
-            console.log('Condolence content changed');
-            
-            return firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId).collection('history').add(previousValue);
+        } else if(change.before.exists){
+            if(newValue.content !== previousValue.content){
+                previousValue.reason = 'content edited';
+                previousValue.updatedAt = newValue.updatedAt;
+                console.log('Condolence content changed');
+                
+                return firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId).collection('history').add(previousValue); 
+            }
         }
 });
 
@@ -327,14 +329,13 @@ exports.sendCondolence = functions.firestore
 
         var send = true;
 
-        // We only want to push to remote if one of these fields changed. Otherwise don't send.
-        if(change.before.exists && change.after.exists){
-            if(data.isDeleted === before.isDeleted && data.isPublic === before.isPublic && data.name === before.name && data.content === before.content){
-                send = false;
-            }
+        // If not onCreate and specific fields haven't change - do nothing; and do nothing if deleted
+        if(change.before.exists && change.after.exists && data.isDeleted === before.isDeleted && data.isPublic === before.isPublic && data.name === before.name && data.content === before.content){
+            send = false;   
         }
+
         
-        if(!("remoteId" in data) && change.before.exists && send){ // Check if remote condolence, and not first create (A bit of a hack; let the onCreate function initialize the condolence, only send after that's done. Also not deleted.)
+        if(!("remoteId" in data) && send){ // Check if remote condolence, and conditions above
         
 
             if(!data.isDeleted){ // Dont send to remote if condolence was deleted
@@ -343,6 +344,8 @@ exports.sendCondolence = functions.firestore
             }
 
             updateUserCondolenceList(data, condolenceId, funeralRef, funeralId);
+        } else {
+            console.log("Don't send to remote (or save to profile)", data, send);
         }
     
 });
@@ -389,11 +392,13 @@ function updateUserCondolenceList(originalCondolence, uid, funeralRef, funeralId
             else{
                 img = null;
             }
+            console.log('condolence', originalCondolence);
             var userCondolenceObject = {
                 name: doc.data().firstName + ' ' + doc.data().lastName,
                 imageURL: img,
                 funeralDate: doc.data().funeralDate,
-                id: funeralId,
+                id: funeralId
+                // createdAt: originalCondolence.createdAt
             };     
 
 
@@ -437,7 +442,7 @@ function sendRemoteCondolence(data, userEmail, funeralRef, sendSettings, condole
             
             
             var options = {
-                url: "http://7f052f66267f.ngrok.io/funerals/" + doc.data().sid + "/condolences",
+                url: "http://256e62271a80.ngrok.io/funerals/" + doc.data().sid + "/condolences",
                 method: 'POST',
                 headers: {'Content-Type': 'application/json', 'PKEY':'974d017320aad98fbe1e76c9080372dcbba67c22'},
                 data: payload,

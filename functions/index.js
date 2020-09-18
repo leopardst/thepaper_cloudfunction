@@ -9,6 +9,7 @@ const algoliasearch = require("algoliasearch");
 admin.initializeApp();
 const firestoreDb = admin.firestore();
 const firestoreAuth = admin.auth();
+const fieldValue = admin.firestore.FieldValue; 
 
 const ALGOLIA_ID = functions.config().algolia.app_id;
 const ALGOLIA_ADMIN_KEY = functions.config().algolia.api_key;
@@ -330,7 +331,7 @@ exports.sendCondolence = functions.firestore
         var send = true;
 
         // If not onCreate and specific fields haven't change - do nothing; and do nothing if deleted
-        if(change.before.exists && change.after.exists && data.isDeleted === before.isDeleted && data.isPublic === before.isPublic && data.name === before.name && data.content === before.content){
+        if(change.before.exists && change.after.exists && data.isDeleted === before.isDeleted && data.isPublic === before.isPublic && data.content === before.content){
             send = false;   
         }
 
@@ -454,7 +455,7 @@ function sendRemoteCondolence(data, userEmail, funeralRef, sendSettings, condole
             if(!sendSettings.blacklist){ //not blacklisted
                 
                 if(functions.config().condolences.sendto === "Prod" || sendSettings.whitelist){ // Prod or whitelisted
-                    options.uri = "https://www.paperman.com/funerals/" + doc.data().sid + "/condolences";
+                    options.url = "https://www.paperman.com/funerals/" + doc.data().sid + "/condolences";
                     whereTo = 'paperman-prod'
                 }
             }
@@ -508,6 +509,173 @@ exports.newCondolence = functions.firestore
         return firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId).set(newCondolence, {merge: true});
     
 });
+
+// updateUserDisplayName :  If the user changes their display name, update all historical condolences with the new name
+exports.updateUserDisplayName = functions.firestore
+    .document('users/{userId}')
+    .onUpdate((change, context) => {
+
+    if(change.after.exists){ // Not deleted, save to index
+        console.log('Updating user profile display name', change.after.data().displayName, change.after.data());
+        const userProfile = change.after.data();
+        const userId = context.params.userId;
+        const newDisplayName = userProfile.displayName;
+
+        let batch = firestoreDb.batch();
+
+        if(userProfile.condolences){
+        
+            userProfile.condolences.forEach((condolence) =>{
+                batch.update(firestoreDb.collection('funerals').doc(condolence.id)
+                    .collection('condolences').doc(userId), {'name': newDisplayName });
+            });
+
+            console.log('Updating historical condolences for user', userId);
+            return batch.commit();
+
+        }
+        else{
+            console.log('User has no historical condolences to update', change.after.data());
+            return null;
+        }
+
+    }
+    else{
+        console.log('User profile deleted! Was this on purpose?', change.before.data());
+        return null;
+    }
+
+            
+    // let condolenceRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
+    // .collection('condolences').doc(documentId);
+    // batch.set(condolenceRef, condolenceObject, {merge: true});
+
+    // let commentRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
+    // .collection('comments').doc(documentId);
+    // batch.set(commentRef, commentObject, {merge: true});
+
+
+
+    // return firestoreDb.collection('funerals').doc(funeralId).collection('condolences').doc(condolenceId).set(newCondolence, {merge: true});
+    
+});
+
+
+exports.funeralChangeUpdateUserProfile = functions.firestore
+    .document('funerals/{funeralId}')
+    .onUpdate(async (change, context) => {
+        
+        const funeralId = context.params.funeralId;
+        const newFuneral = change.after.data();
+        const oldFuneral = change.before.data();
+
+        // Funeral changed, not deleted
+        if(change.after.exists){
+            console.log('Funeral details changed. Updating relationships', change.after.data());
+            
+            // Get all condolences
+            const allCondolences = await firestoreDb.collection('funerals').doc(funeralId).collection('condolences').get();
+            
+
+            await Promise.all(allCondolences.docs.map(async(doc) => {
+                const data = doc.data();
+                const condolenceId = doc.id;
+
+            
+                if(!("remoteId" in data)){
+                    console.log('found condolence', data);
+                    let userCondolenceRef = firestoreDb.collection('users').doc(condolenceId);
+            
+                    var newFuneralObject = {
+                        name: newFuneral.firstName + ' ' + newFuneral.lastName,
+                        imageURL: newFuneral.imageURL,
+                        funeralDate: newFuneral.funeralDate,
+                        id: funeralId
+                    }
+            
+                    var oldFuneralObject = {
+                        name: oldFuneral.firstName + ' ' + oldFuneral.lastName,
+                        imageURL: oldFuneral.imageURL,
+                        funeralDate: oldFuneral.funeralDate,
+                        id: funeralId
+                    };
+            
+                    await userCondolenceRef.update({
+                        condolences: fieldValue.arrayRemove(oldFuneralObject)
+                    });
+
+                    console.log('Successfully removed old funeral from user list');
+                    await userCondolenceRef.update({
+                        condolences: fieldValue.arrayUnion(newFuneralObject)
+                    });
+                    console.log('Added new funeral to user list');
+                }
+            }));
+
+        
+            console.log('done!?');
+        }
+        else{
+            // Funeral deleted.... 
+            
+        }
+    });
+
+async function updateUserListPromise(snapshot) {
+    const data = snapshot.data();
+    const condolenceId = snapshot.id;
+    console.log('here', snapshot);
+
+    if(!("remoteId" in data)){
+        console.log('found condolence', data);
+        let userCondolenceRef = firestoreDb.collection('users').doc(condolenceId);
+
+        var newFuneralObject = {
+            name: newFuneral.firstName + ' ' + newFuneral.lastName,
+            imageURL: newFuneral.imageURL,
+            funeralDate: newFuneral.funeralDate,
+            id: funeralId
+        }
+
+        var oldFuneralObject = {
+            name: oldFuneral.firstName + ' ' + oldFuneral.lastName,
+            imageURL: oldFuneral.imageURL,
+            funeralDate: oldFuneral.funeralDate,
+            id: funeralId
+        };
+
+        await userCondolenceRef.update({
+            condolences: fieldValue.arrayRemove(oldFuneralObject)
+        });
+        console.log('Successfully removed old funeral from user list');
+        await userCondolenceRef.update({
+            condolences: fieldValue.arrayUnion(newFuneralObject)
+        });
+        console.log('Added new funeral to user list');
+
+
+        // userCondolenceRef.update({
+        //         condolences: firestoreDb.FieldValue.arrayRemove(oldFuneralObject)
+        //     })
+        //     .then(() => {
+        //         console.log('Successfully removed old funeral from user list');
+        //         userCondolenceRef.update({
+        //             condolences: firestoreDb.FieldValue.arrayUnion(newFuneralObject)
+        //         })
+        //         .then(() => {
+        //             console.log('Added new funeral to user list');
+        //         })
+        //         .catch((err) => {
+        //             console.log(err);
+        //         });
+        //     })
+        //     .catch((err) => {
+        //         console.log(err);
+        //     });     
+    }
+    
+}
+
 
 // newUserProfile : Creates the user profile when a new user logs in for the first time
 exports.newUserProfile = functions.auth.user().onCreate((user) => {

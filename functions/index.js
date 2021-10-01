@@ -71,6 +71,7 @@ exports.updateFirestore = functions.database.ref('/funerals/{funeralId}')
             createdDate : admin.firestore.Timestamp.fromDate(new Date(data.createdDate)),
             isLive : data.isLive,
             lastTouchDate : admin.firestore.Timestamp.now(),
+            allowCondolences: data.allowCondolences,
         };
 
         if (data.imageURL !== ""){
@@ -176,7 +177,6 @@ exports.newRemoteCondolence = functions.database.ref('/condolences/{funeralId}/{
         
 });
 
-
 async function checkIfCondolenceExists(uid, funeralId){
     let getCondolence = firestoreDb.collection('funerals').doc("paperman-" + funeralId)
     .collection('condolences').doc(uid).get();
@@ -214,8 +214,6 @@ async function checkUserInFirebase(email) {
             });
     });
 }
-
-
 
 async function createUserByEmail(email, name){
 
@@ -398,28 +396,17 @@ function updateUserCondolenceList(originalCondolence, uid, funeralRef, funeralId
                 name: doc.data().firstName + ' ' + doc.data().lastName,
                 imageURL: img,
                 funeralDate: doc.data().funeralDate,
-                id: funeralId
+                id: funeralId,
+                isDeleted: originalCondolence.isDeleted,
                 // createdAt: originalCondolence.createdAt
-            };     
+            };
+
+            console.log('Updating user condolence list', uid, userCondolenceObject);
+
+            return firestoreDb.collection('users').doc(uid).collection('condolences').doc(funeralId)
+                .set(userCondolenceObject, {merge: true});
 
 
-            if(!originalCondolence.isDeleted){
-                // new, add to list
-                // this is going to have to be changed if we stop using user UID as the ID for condolence
-                console.log('Adding to users condolence list', uid, userCondolenceObject);
-
-                return firestoreDb.collection('users').doc(uid).update({
-                    condolences: admin.firestore.FieldValue.arrayUnion(userCondolenceObject)
-                });
-            }
-            else{
-                // deleted, remove from list
-                console.log('Removing from users condolence list', uid, userCondolenceObject);
-
-                return firestoreDb.collection('users').doc(uid).update({
-                    condolences: admin.firestore.FieldValue.arrayRemove(userCondolenceObject)
-                });
-            }
         }
     });
 
@@ -494,7 +481,6 @@ function sendRemoteCondolence(data, userEmail, funeralRef, sendSettings, condole
 
 }
 
-
 // newCondolence :  Sets createdAt time for all condolences; remote and local
 exports.newCondolence = functions.firestore
     .document('funerals/{funeralId}/condolences/{condolenceId}')
@@ -513,7 +499,7 @@ exports.newCondolence = functions.firestore
 // updateUserDisplayName :  If the user changes their display name, update all historical condolences with the new name
 exports.updateUserDisplayName = functions.firestore
     .document('users/{userId}')
-    .onUpdate((change, context) => {
+    .onUpdate(async (change, context) => {
 
     if(change.after.exists){ // Not deleted, save to index
         console.log('Updating user profile display name', change.after.data().displayName, change.after.data());
@@ -523,10 +509,12 @@ exports.updateUserDisplayName = functions.firestore
 
         let batch = firestoreDb.batch();
 
-        if(userProfile.condolences){
+        const allUserCondolences = await firestoreDb.collection('users').doc(userId).collection('condolences').get();
         
-            userProfile.condolences.forEach((condolence) =>{
-                batch.update(firestoreDb.collection('funerals').doc(condolence.id)
+        if(allUserCondolences.size > 0){
+        
+            allUserCondolences.forEach((doc) =>{
+                batch.update(firestoreDb.collection('funerals').doc(doc.id)
                     .collection('condolences').doc(userId), {'name': newDisplayName });
             });
 
@@ -560,7 +548,7 @@ exports.updateUserDisplayName = functions.firestore
     
 });
 
-
+// If a funeral changes, update user profile to reflect the new changes
 exports.funeralChangeUpdateUserProfile = functions.firestore
     .document('funerals/{funeralId}')
     .onUpdate(async (change, context) => {
@@ -582,99 +570,35 @@ exports.funeralChangeUpdateUserProfile = functions.firestore
                 const condolenceId = doc.id;
 
             
-                if(!("remoteId" in data)){
+                if(!("remoteId" in data) && !data.isDeleted){
                     console.log('found condolence', data);
-                    let userCondolenceRef = firestoreDb.collection('users').doc(condolenceId);
-            
-                    var newFuneralObject = {
-                        name: newFuneral.firstName + ' ' + newFuneral.lastName,
-                        imageURL: newFuneral.imageURL,
-                        funeralDate: newFuneral.funeralDate,
-                        id: funeralId
-                    }
-            
-                    var oldFuneralObject = {
-                        name: oldFuneral.firstName + ' ' + oldFuneral.lastName,
-                        imageURL: oldFuneral.imageURL,
-                        funeralDate: oldFuneral.funeralDate,
-                        id: funeralId
-                    };
-            
-                    await userCondolenceRef.update({
-                        condolences: fieldValue.arrayRemove(oldFuneralObject)
-                    });
+                    let userCondolenceRef = firestoreDb.collection('users').doc(condolenceId).collection('condolences').doc(funeralId);
 
-                    console.log('Successfully removed old funeral from user list');
-                    await userCondolenceRef.update({
-                        condolences: fieldValue.arrayUnion(newFuneralObject)
-                    });
-                    console.log('Added new funeral to user list');
+                    var funeralCondolenceObject = {
+                        name: newFuneral.firstName + ' ' + newFuneral.lastName,
+                        funeralDate: newFuneral.funeralDate,
+                        id: funeralId,
+                    }
+                    
+                    if(newFuneral.imageURL){
+                        funeralCondolenceObject.imageURL = newFuneral.imageURL;
+                    }
+                    else{
+                        funeralCondolenceObject.imageURL = null;
+                    }
+                
+                    await userCondolenceRef.set(
+                        funeralCondolenceObject, {merge: true}
+                    );
                 }
             }));
 
-        
-            console.log('done!?');
-        }
+                }
         else{
             // Funeral deleted.... 
             
         }
     });
-
-async function updateUserListPromise(snapshot) {
-    const data = snapshot.data();
-    const condolenceId = snapshot.id;
-    console.log('here', snapshot);
-
-    if(!("remoteId" in data)){
-        console.log('found condolence', data);
-        let userCondolenceRef = firestoreDb.collection('users').doc(condolenceId);
-
-        var newFuneralObject = {
-            name: newFuneral.firstName + ' ' + newFuneral.lastName,
-            imageURL: newFuneral.imageURL,
-            funeralDate: newFuneral.funeralDate,
-            id: funeralId
-        }
-
-        var oldFuneralObject = {
-            name: oldFuneral.firstName + ' ' + oldFuneral.lastName,
-            imageURL: oldFuneral.imageURL,
-            funeralDate: oldFuneral.funeralDate,
-            id: funeralId
-        };
-
-        await userCondolenceRef.update({
-            condolences: fieldValue.arrayRemove(oldFuneralObject)
-        });
-        console.log('Successfully removed old funeral from user list');
-        await userCondolenceRef.update({
-            condolences: fieldValue.arrayUnion(newFuneralObject)
-        });
-        console.log('Added new funeral to user list');
-
-
-        // userCondolenceRef.update({
-        //         condolences: firestoreDb.FieldValue.arrayRemove(oldFuneralObject)
-        //     })
-        //     .then(() => {
-        //         console.log('Successfully removed old funeral from user list');
-        //         userCondolenceRef.update({
-        //             condolences: firestoreDb.FieldValue.arrayUnion(newFuneralObject)
-        //         })
-        //         .then(() => {
-        //             console.log('Added new funeral to user list');
-        //         })
-        //         .catch((err) => {
-        //             console.log(err);
-        //         });
-        //     })
-        //     .catch((err) => {
-        //         console.log(err);
-        //     });     
-    }
-    
-}
 
 
 // newUserProfile : Creates the user profile when a new user logs in for the first time
@@ -726,4 +650,55 @@ exports.migrateCondolenceDelete = functions.https.onRequest(async (request, resp
       });
       return response.status(200).send('done');
   });
+
+  exports.migrateAllowCondolencesFuneral2 = functions.https.onRequest(async (request, response) => {
+
+
+    console.log('Starting funeral migration...');
+
+    let funeralRef = firestoreDb.collection('funerals');
+    // let allFunerals = await condolencesRef.get();
+
+    let start = new Date('2020-07-20');
+    let end = new Date('2020-09-20');
+
+    funeralRef
+    .where('createdDate','>',start)
+    .where('createdDate','<',end)
+    .get().then(snap => {
+        let batch = firestoreDb.batch();
+        snap.forEach(doc => {
+            const docRef = firestoreDb.collection('funerals').doc(doc.id);
+            batch.update(docRef, { allowCondolences: true });
+        });
+        return batch.commit();
+    })
+    .then(() => {
+        return response.status(200).send('success');
+    })
+    .catch(error => {
+        return response.status(500).send(error);
+    })
+
+    // allFunerals.forEach(doc=> {
+    //     console.log('condolence:', doc);
+    //     batch.update(doc.ref, { allowCondolences: true });
+    // });
+
+    // await batch.commit();
+
+    
+
+    // return funeralRef.get().then(snapshot => {
+    //     let batch = firestoreDb.batch();
+        
+    //     snapshot.docs.forEach(doc => {
+    //         batch.update(doc.ref, { allowCondolences: true });
+    //     });
+
+    //     return batch.commit();
+    // });
+
+    });
+
 

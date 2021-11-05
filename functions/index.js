@@ -653,7 +653,6 @@ exports.migrateCondolenceDelete = functions.https.onRequest(async (request, resp
 
   exports.migrateAllowCondolencesFuneral2 = functions.https.onRequest(async (request, response) => {
 
-
     console.log('Starting funeral migration...');
 
     let funeralRef = firestoreDb.collection('funerals');
@@ -680,25 +679,88 @@ exports.migrateCondolenceDelete = functions.https.onRequest(async (request, resp
         return response.status(500).send(error);
     })
 
-    // allFunerals.forEach(doc=> {
-    //     console.log('condolence:', doc);
-    //     batch.update(doc.ref, { allowCondolences: true });
-    // });
+});
 
-    // await batch.commit();
 
+exports.migrateComments = functions.https.onRequest(async (request, response) => {
+
+    console.log('Starting comment migration...');
+
+    // copyCondolences('paperman-10000');
+
+    const funeralId = 'paperman-8892'; 
+    let condolencesRef = firestoreDb.collection('funerals').doc(funeralId).collection('condolences');
+    // let allFunerals = await condolencesRef.get();
+
+    let start = new Date('2020-07-20');
+    let end = new Date('2020-09-20');
     
+    condolencesRef
+    .get().then(snap => {
+        let batch = firestoreDb.batch();
+        snap.forEach(doc => {
+            const commentsRef = firestoreDb.collection('funerals').doc(funeralId).collection('comments').doc(doc.id);
+            console.log('creating comment:', doc.id);
+            batch.set(commentsRef, doc.data());
+        });
+        return batch.commit();
+    })
+    .then(() => {
+        return response.status(200).send('success');
+    })
+    .catch(error => {
+        return response.status(500).send(error);
+    })
 
-    // return funeralRef.get().then(snapshot => {
+    // let funeralRef = firestoreDb.collection('funerals');
+    // // let allFunerals = await condolencesRef.get();
+
+    // let start = new Date('2020-07-20');
+    // let end = new Date('2020-09-20');
+    
+    // funeralRef
+    // .where('createdDate','>',start)
+    // .where('createdDate','<',end)
+    // .get().then(snap => {
     //     let batch = firestoreDb.batch();
-        
-    //     snapshot.docs.forEach(doc => {
-    //         batch.update(doc.ref, { allowCondolences: true });
+    //     snap.forEach(doc => {
+    //         const docRef = firestoreDb.collection('funerals').doc(doc.id);
     //     });
-
     //     return batch.commit();
-    // });
+    // })
+    // .then(() => {
+    //     return response.status(200).send('success');
+    // })
+    // .catch(error => {
+    //     return response.status(500).send(error);
+    // })
 
-    });
+});
+
+async function copyCondolences(funeralId) {
+
+    let condolencesRef = firestoreDb.collection('funerals').doc(funeralId).collection('condolences');
+    // let allFunerals = await condolencesRef.get();
+
+    let start = new Date('2020-07-20');
+    let end = new Date('2020-09-20');
+    
+    condolencesRef
+    .get().then(snap => {
+        let batch = firestoreDb.batch();
+        snap.forEach(doc => {
+            const commentsRef = firestoreDb.collection('funerals').doc(funeralId).collection('comments').doc(doc.id);
+            console.log('creating comment:', doc.id);
+            batch.set(docRef, doc.data());
+        });
+        return batch.commit();
+    })
+    .then(() => {
+        return true;
+    })
+    .catch(error => {
+        return false;
+    })
+}
 
 

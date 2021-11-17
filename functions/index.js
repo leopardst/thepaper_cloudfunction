@@ -72,6 +72,16 @@ exports.updateFirestore = functions.database.ref('/funerals/{funeralId}')
             isLive : data.isLive,
             lastTouchDate : admin.firestore.Timestamp.now(),
             allowCondolences: data.allowCondolences,
+            shivaDetails: data.shivaDetails,
+            cemetery: data.cemetery,
+            condolenceEmails: data.condolenceEmails,
+            director: data.director,
+            donations: data.donations,
+            papermanMemo: data.papermanMemo,
+            shivaStartDate: data.shivaStartDate,
+            shivaEndDate: data.shivaEndDate,
+            obituaryFr: data.obtituaryFr,
+            notes: data.notes,
         };
 
         if (data.imageURL !== ""){
@@ -145,26 +155,26 @@ exports.newRemoteCondolence = functions.database.ref('/condolences/{funeralId}/{
                 isDeleted: false,
             };
 
-            // var commentObject = {
-            //     name: data.name,
-            //     email: data.email,
-            //     content: data.message.trim(),
-            //     createdAt: admin.firestore.Timestamp.fromDate(new Date(data.updatedAt)),
-            //     isPublic: data.isPublic,
-            //     remoteId: data.remote_id,
-            //     isDeleted: false,
-            // };
+            var commentObject = {
+                name: data.name,
+                email: data.email,
+                content: data.message.trim(),
+                updatedAt: admin.firestore.Timestamp.fromDate(new Date(data.updatedAt)),
+                isPublic: data.isPublic,
+                remoteId: data.remote_id,
+                isDeleted: false,
+            };
 
-
+           
             let batch = firestoreDb.batch();
             
             let condolenceRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
             .collection('condolences').doc(documentId);
             batch.set(condolenceRef, condolenceObject, {merge: true});
 
-            // let commentRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
-            // .collection('comments').doc(documentId);
-            // batch.set(commentRef, commentObject, {merge: true});
+            let commentRef = firestoreDb.collection('funerals').doc("paperman-" + data.remote_funeral_id)
+            .collection('comments').doc(documentId);
+            batch.set(commentRef, commentObject, {merge: true});
 
             if(functions.config().condolences.receive === "true"){
                 console.log('Saving new remote condolence', condolenceRef, condolenceObject);
@@ -496,6 +506,21 @@ exports.newCondolence = functions.firestore
     
 });
 
+// newComment :  Sets createdAt time for all comments; remote and local
+exports.newComment = functions.firestore
+    .document('funerals/{funeralId}/comments/{commentId}')
+    .onCreate((snap, context) => {
+
+        const newComment = snap.data();
+        const commentId = context.params.commentId;
+        const funeralId = context.params.funeralId;
+
+        this.newComment.createdAt = newComment.updatedAt.toDate();
+
+        return firestoreDb.collection('funerals').doc(funeralId).collection('comments').doc(commentId).set(newComment, {merge: true});
+    
+});
+
 // updateUserDisplayName :  If the user changes their display name, update all historical condolences with the new name
 exports.updateUserDisplayName = functions.firestore
     .document('users/{userId}')
@@ -686,9 +711,11 @@ exports.migrateComments = functions.https.onRequest(async (request, response) =>
 
     console.log('Starting comment migration...');
 
+    let funeralId = request.query.funeralId;
+
     // copyCondolences('paperman-10000');
 
-    const funeralId = 'paperman-8892'; 
+    // const funeralId = 'paperman-8892'; 
     let condolencesRef = firestoreDb.collection('funerals').doc(funeralId).collection('condolences');
     // let allFunerals = await condolencesRef.get();
 
